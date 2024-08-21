@@ -367,6 +367,10 @@ dbDisconnect(con)
 
 ```{r}
 ### AWS S3 <=> JSON stuff.... ----------------------------------------------------
+library(duckdb)
+
+if (!dir.exists("data")) dir.create("data")
+
 con <- DBI::dbConnect(duckdb::duckdb(), dbdir = "data/posit-conf-arrow.duckdb")
 
 dbExecute(con, "INSTALL json;")
@@ -437,24 +441,23 @@ rural_places_arrow |> nrow()
 rural_places_arrow |> collect() |> nrow()
 # [1] 2882
 
-rural_places_arrow |>
-  write_dataset(path = "data/rural_places",
-                format = "parquet")
-
 rural_places_properties <- lapply(rural_places_df$properties |> as.list(), jsonlite::fromJSON)
 
-rural_places_geometry <- rural_places_ddb$geometry  # <= TODO: What type is this???
+rural_places_geometry <- rural_places_df$geometry  # <= TODO: What type is this???
                                                     # ... how to include in parquet?
 
 rural_places_props <- data.frame(matrix(ncol=length(rural_places_properties[[1]]),nrow=0, dimnames=list(NULL, names(rural_places_properties[[1]]))))
+rural_places_funky <- list()
 
+# Convert list of lists to data.frame... better way to do this?
 for (r in c(1:length(rural_places_properties))) {
   for (c in c(1:length(rural_places_properties[[r]]))) {
       # Replace NULLs with "NA"
       rural_places_properties[[r]][sapply(rural_places_properties[[r]], is.null)] <- NA
-      if (length(unlist(rural_places_properties[[r]])) > 61) {
+      if (length(unlist(rural_places_properties[[r]])) == length(rural_places_properties[[1]])) { # <= Drop any record with missing (null or funky) columns
         rural_places_props[r,] <- unlist(rural_places_properties[[r]])
-      }
+      } else {
+        append(rural_places_funky, rural_places_properties[[r]])
     }
 }
 
@@ -467,18 +470,19 @@ rural_places_arrow_by_state |>
     write_dataset(path = "data/rural_places",
                 format = "parquet")
 
-rural_places <- arrow::open_dataset("data/rural_places") # <= available at s3://cori-risi-apps/examples/who-wins-b2s/rural_places
+# rural_places <- arrow::open_dataset("data/rural_places") # <= also available at s3://cori-risi-apps/examples/who-wins-b2s/rural_places
+rural_places <- dbGetQuery(con, "SELECT * FROM parquet_scan('s3://cori-risi-apps/examples/who-wins-b2s/rural_places/STUSPS=*/*.parquet')") |>
+  to_duckdb() |>
+  to_arrow()
 
-rural_places |>
-  mutate(prop_score = as.double(prop_score)) |>
+rural_places_pc_logit_score <- rural_places |>
+  mutate(prop_score = as.double(pc_logit_prediction))
+
+rural_places_max_prop_by_state <- rural_places_pc_logit_score |>
+  group_by(STUSPS) |>
   summarize(
     max_prop_score = max(as.double(prop_score), na.rm = TRUE)
   ) |>
-    collect()
-
-rural_places |>
-  mutate(prop_score = as.double(prop_score)) |>
-  select(prop_score) |>
     collect()
 
 dbDisconnect(con)
