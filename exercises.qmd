@@ -1,0 +1,486 @@
+
+
+```{r}
+# source("data/setup.R")
+
+library(arrow)
+library(dplyr)
+library(tidyr)
+
+nyc_taxi <- arrow::open_dataset("data/nyc-taxi")
+
+nyc_taxi
+# FileSystemDataset with 36 Parquet files
+# vendor_name: string
+# pickup_datetime: timestamp[ms]
+# dropoff_datetime: timestamp[ms]
+# passenger_count: int64
+# trip_distance: double
+# pickup_longitude: double
+# pickup_latitude: double
+# rate_code: string
+# store_and_fwd: string
+# dropoff_longitude: double
+# dropoff_latitude: double
+# payment_type: string
+# fare_amount: double
+# extra: double
+# mta_tax: double
+# tip_amount: double
+# tolls_amount: double
+# total_amount: double
+# improvement_surcharge: double
+# congestion_surcharge: double
+# pickup_location_id: int64
+# dropoff_location_id: int64
+# year: int32
+# month: int32
+
+nyc_taxi_group_by_year <- nyc_taxi |>
+  group_by(year)
+
+library(tictoc)
+tic()
+nyc_taxi_summarize <- nyc_taxi_group_by_year |>
+  summarize(
+    all_trips = n(),
+    shared_trips = sum(passenger_count > 1, na.rm = TRUE), 
+    grt_100 = sum(total_amount > 100)
+  )
+nyc_taxi_summarize |> collect()
+toc()
+
+nyc_taxi_sum_with_pct_shared <- 
+  nyc_taxi_summarize |>
+  mutate(pct_shared = shared_trips / all_trips * 100)
+
+nyc_taxi_sum_with_pct_shared |> collect()
+
+library(tictoc)
+
+tic(); nyc_taxi_sum_with_pct_shared |> collect(); toc()
+
+nyc_taxi_group_by_month <- nyc_taxi_group_by_year |> 
+  group_by(month)
+
+nyc_taxi_group_by_month_2019 <- nyc_taxi_group_by_year |> 
+  filter(year == 2019) |> 
+  group_by(month)
+
+nyc_taxi_group_by_month_2019 |> 
+  summarize(max_trip_distance = max(trip_distance))
+
+nyc_taxi_max_distance_by_month_2019 <- nyc_taxi_group_by_month_2019 |> 
+  summarize(max_trip_distance = max(trip_distance)) |> 
+  arrange(month)
+
+nyc_taxi_max_distance_by_month_2019 |> collect()
+
+tic(); nyc_taxi_max_distance_by_month_2019 |> arrange(month) |> collect(); toc()
+
+nyc_taxi_amount_grt_100 <- nyc_taxi_group_by_year |> filter(total_amount > 100)
+
+nyc_taxi_amount_grt_100 |> nrow()
+
+nyc_taxi_group_by_month_2020 <- nyc_taxi_group_by_year |> 
+  filter(year == 2020) |> 
+  group_by(month)
+
+nyc_taxi_september_2020 <- nyc_taxi_group_by_month_2020 |>
+  filter(month == 9)
+
+nyc_taxi_september_2020_vendors_ending_in_S <- nyc_taxi_september_2020 |>
+  filter(stringr::str_ends(vendor_name, "S")) 
+
+nyc_taxi_september_2020_vendors_ending_in_S |> nrow() 
+
+nyc_taxi_september_2020_vendors_ending_in_S |> head() |> collect()
+
+fare_pounds <-  nyc_taxi |>
+  mutate(fare_amount_pounds = fare_amount * 0.79) |>
+  head() |>
+  collect()
+
+fare_pounds <- nyc_taxi |>
+  mutate(across(ends_with("amount"), list(pounds = ~.x * 0.79))) |>
+  select(contains("amount")) |>
+  head() |>
+  collect()
+
+# ## Does not work...
+# nyc_taxi |> 
+#   group_by(vendor_name) |>
+#   summarise(max_fare = max(fare_amount)) |>
+#   pivot_longer(!vendor_name, names_to = "metric") |> 
+#   collect()
+# # Error in pivot_longer(summarise(group_by(nyc_taxi, vendor_name), max_fare = max(fare_amount)),  : 
+# #   could not find function "pivot_longer"
+
+
+## Joins
+
+vendors <- tibble::tibble(
+  code = c("VTS", "CMT", "DDS"),
+  full_name = c(
+    "Verifone Transportation Systems",
+    "Creative Mobile Technologies",
+    "Digital Dispatch Systems"
+  )
+)
+
+nyc_taxi |>
+  left_join(vendors, by = c("vendor_name" = "code")) |>
+  select(vendor_name, full_name, pickup_datetime) |>
+  head(3) |>
+  collect()
+
+nyc_taxi_zones <- arrow_table(
+  read_csv_arrow("data/taxi_zone_lookup.csv") |>
+  select(location_id = LocationID,
+         borough = Borough)
+)
+
+nyc_taxi_zones
+# Table
+# 265 rows x 2 columns
+# $location_id <int32>
+# $borough <string>
+
+nyc_taxi |>
+  left_join(nyc_taxi_zones, by = c("pickup_location_id" = "location_id")) |>
+  group_by(pickup_location_id) |>
+  summarize( 
+    trips_to_pickup_zone = n()
+  ) |>
+  collect()
+# Error in `compute.arrow_dplyr_query()`:
+# ! Invalid: Incompatible data types for corresponding join field keys: FieldRef.Name(pickup_location_id) of type int64 and FieldRef.Name(location_id) of type int32
+# Hide Traceback
+#     ▆
+#  1. ├─dplyr::collect(left_join(nyc_taxi, nyc_taxi_zones, by = c(pickup_location_id = "location_id")))
+#  2. └─arrow:::collect.arrow_dplyr_query(...)
+#  3.   └─arrow:::compute.arrow_dplyr_query(x)
+#  4.     └─base::tryCatch(...)
+#  5.       └─base (local) tryCatchList(expr, classes, parentenv, handlers)
+#  6.         └─base (local) tryCatchOne(expr, names, parentenv, handlers[[1L]])
+#  7.           └─value[[3L]](cond)
+#  8.             └─arrow:::augment_io_error_msg(e, call, schema = schema())
+#  9.               └─rlang::abort(msg, call = call)
+
+nyc_taxi
+
+nyc_taxi_zones_arrow <- arrow_table(
+  read_csv_arrow("data/taxi_zone_lookup.csv") |>
+  select(
+    location_id = LocationID,
+    borough = Borough,
+    pickup_zone = Zone,
+    service_zone
+  ), 
+  schema = schema(
+    location_id = int64(), 
+    borough = utf8(),
+    pickup_zone = utf8(),
+    service_zone = utf8()
+  )
+)
+
+nyc_taxi_zones_arrow
+# Table
+# 265 rows x 4 columns
+# $location_id <int64>
+# $borough <string>
+# $pickup_zone <string>
+# $service_zone <string>
+
+tic()
+nyc_taxi |>
+  left_join(nyc_taxi_zones_arrow, by = c("pickup_location_id" = "location_id")) |>
+  group_by(pickup_location_id) |>
+  summarize( 
+    trips_to_pickup_zone = n()
+  ) |>
+  collect()
+toc()
+
+airport_pickups <- nyc_taxi |>
+  left_join(nyc_taxi_zones_arrow, by = c("pickup_location_id" = "location_id")) |>
+  filter(stringr::str_detect(pickup_zone, "Airport")) |>
+  group_by(pickup_zone) |>
+  summarize( 
+    trips_to_pickup_zone = n()
+  )
+
+tic()
+airport_pickups |>
+    collect()
+toc()
+
+```
+
+
+```{r}
+## Schema stuff
+
+seattle_csv <- arrow::open_dataset(source = "data/seattle-library-checkouts.csv", format = "csv")
+
+seattle_schema <- seattle_csv$schema$code()
+
+seattle_arrow <- arrow::open_dataset(
+  source = "data/seattle-library-checkouts.csv", 
+  format = "csv",
+  col_types = schema(ISBN = string()),
+  # schema = schema(
+  #   UsageClass = utf8(), 
+  #   CheckoutType = utf8(), 
+  #   MaterialType = utf8(), 
+  #   CheckoutYear = int64(), 
+  #   CheckoutMonth = int64(), 
+  #   Checkouts = int64(), 
+  #   Title = utf8(), 
+  #   ISBN = string(), 
+  #   Creator = utf8(), 
+  #   Subjects = utf8(), 
+  #   Publisher = utf8(), 
+  #   PublicationYear = utf8()
+  # )
+  # skip = 1
+)
+
+seattle_arrow |>  nrow()
+# [1] 41389466 # <= with complete schema, no skip = 1
+# [1] 41389465
+
+
+seattle_checkouts_by_year <- seattle_arrow |> 
+  group_by(CheckoutYear) |>
+  summarise(sum(Checkouts))
+
+seattle_checkouts_by_year |>
+  collect() |> system.time()
+
+seattle_checkouts_by_year <- seattle_arrow |> 
+  group_by(CheckoutYear)
+
+seattle_checkouts_by_year |>
+  write_dataset(path = "data/seattle-checkout-parquet-demo",
+                format = "parquet")
+
+arrow::open_dataset("data/seattle-checkout-parquet-demo") |>
+  filter(CheckoutYear == 2021, MaterialType == "BOOK") |>
+  group_by(CheckoutMonth) |>
+  summarise(TotalCheckout = sum(Checkouts)) |>
+  arrange(desc(CheckoutMonth)) |>
+  collect() |>
+  system.time()
+
+seattle_checkouts_by_type <- seattle_arrow |> 
+  group_by(CheckoutType)
+
+seattle_checkouts_by_type |>
+  write_dataset(path = "data/seattle-checkout-parquet-demo2",
+                format = "parquet")
+
+arrow::open_dataset("data/seattle-checkout-parquet-demo2") |>
+  filter(CheckoutYear == 2021, MaterialType == "BOOK") |>
+  group_by(CheckoutMonth) |>
+  summarise(TotalCheckout = sum(Checkouts)) |>
+  arrange(desc(CheckoutMonth)) |>
+  collect() |>
+  system.time()
+
+```
+
+
+```{r}
+## Does not work in R....
+rural_places <- open_dataset("s3://cori-risi-apps/examples/who-wins-b2s/rural_places_2500_plus.json")
+# Error in `open_dataset()`:
+# ! Invalid: Error creating dataset. Could not read schema from 'cori-risi-apps/examples/who-wins-b2s/rural_places_2500_plus.json'. Is this a 'parquet' file?: Could not open Parquet input source 'cori-risi-apps/examples/who-wins-b2s/rural_places_2500_plus.json': Parquet magic bytes not found in footer. Either the file is corrupted or this is not a parquet file.
+# ℹ Did you mean to specify a 'format' other than the default (parquet)?
+# Run `rlang::last_trace()` to see where the error occurred.
+```
+
+
+```{r}
+## DuckDB stuff ----------------------------------------------------------------
+if (!require(duckdb)) {
+  install.packages("duckdb")
+  library(duckdb)
+}
+library(DBI)
+
+# # to start an in-memory database
+# con <- dbConnect(duckdb())
+
+# to use a local database file
+con <- DBI::dbConnect(duckdb::duckdb(), dbdir = "data/posit-conf-arrow.duckdb")
+
+# # This crashed my session, btw, so you probably want to pipe the result to additional functions...
+# nyc_taxi |> arrow::to_duckdb(con = con)
+
+# This "works", but the result is not an arrow object
+nyc_taxi_to_from_duckdb <- nyc_taxi |> 
+  to_duckdb() |> # send data to duckdb |> 
+  to_arrow() # return data back to arrow
+
+# # This does not work (crashes)
+# nyc_taxi |> arrow::to_duckdb(con = con) |> arrow::to_arrow() |> nrow()
+
+# This also does not work (crashes)...
+nyc_taxi_to_from_duckdb <- nyc_taxi |>
+  to_duckdb(con = con) |> # send data to duckdb |> 
+  to_arrow() # return data back to arrow
+  filter(year == 2019) |>
+  group_by(month)  |>
+  summarize(
+    all_trips = n(),
+    shared_trips = sum(passenger_count > 1, na.rm = TRUE),
+    grt_100 = sum(total_amount > 100)
+  ) |>
+  collect()
+
+# Use duckdb to pivot (without specified con)...
+nyc_taxi_pivot <- nyc_taxi |> 
+  group_by(vendor_name) |>
+  summarise(max_fare = max(fare_amount)) |>
+  to_duckdb() |> # send data to duckdb
+  tidyr::pivot_longer(!vendor_name, names_to = "metric") |> 
+  to_arrow() # return data back to arrow
+
+nyc_taxi_pivot |> collect()
+
+# Use duckdb to pivot...
+nyc_taxi_pivot <- nyc_taxi |> 
+  group_by(vendor_name) |>
+  summarise(max_fare = max(fare_amount)) |>
+  to_duckdb(con = con) |> # send data to duckdb
+  tidyr::pivot_longer(!vendor_name, names_to = "metric") |> 
+  to_arrow() # return data back to arrow
+
+nyc_taxi_pivot |> nyc_taxi_pivotcollect()
+
+dbDisconnect(con)
+
+```
+
+
+```{r}
+### AWS S3 <=> JSON stuff.... ----------------------------------------------------
+con <- DBI::dbConnect(duckdb::duckdb(), dbdir = "data/posit-conf-arrow.duckdb")
+
+dbExecute(con, "INSTALL json;")
+dbExecute(con, "LOAD json;")
+dbExecute(con, "INSTALL httpfs;")
+dbExecute(con, "LOAD httpfs;")
+dbExecute(con, "INSTALL aws;")
+dbExecute(con, "LOAD aws;")
+
+dbExecute(con, "
+  CREATE TABLE IF NOT EXISTS example (j JSON);
+  INSERT INTO example VALUES
+    ('{\"family\": \"anatidae\", \"species\": [\"duck\", \"goose\"], \"coolness\": 42.42}'),
+    ('{\"family\": \"canidae\", \"species\": [\"labrador\", \"bulldog\"], \"hair\": true}');
+");
+
+example_json <- dbGetQuery(con, "SELECT * FROM example")
+
+example_json_transform <- dbGetQuery(con, "SELECT json_transform(j, '{\"family\": \"VARCHAR\", \"coolness\": \"DOUBLE\"}') FROM example;")
+
+rural_places_db  <- dbGetQuery(con, "SELECT features FROM 's3://cori-risi-apps/examples/who-wins-b2s/rural_places_2500_plus.json'")
+
+geojson_collection_struct <- dbGetQuery(con, "
+SELECT typeof(json_transform('{}', '{
+  \"type\": \"VARCHAR\",
+  \"name\": \"VARCHAR\",
+  \"crs\": { \"type\": \"VARCHAR\", \"properties\": { \"name\": \"VARCHAR\" } },
+  \"features\": [
+    { \"type\": \"VARCHAR\", \"properties\": \"VARCHAR\", \"geometry\": { \"type\": \"VARCHAR\", \"coordinates\": [ \"DOUBLE\" ] } }
+  ]
+}'));
+")[1,]
+
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS rural_places as
+SELECT *
+  FROM read_json(
+    's3://cori-risi-apps/examples/who-wins-b2s/rural_places_2500_plus.json',
+    columns={
+      \"type\": \"VARCHAR\", 
+      \"name\": \"VARCHAR\", 
+      \"crs\": \"STRUCT(
+        type VARCHAR, 
+        properties STRUCT(name VARCHAR)
+      )\", 
+      \"features\": \"STRUCT(
+        type VARCHAR, 
+        properties VARCHAR, 
+        geometry STRUCT(
+          type VARCHAR, 
+          coordinates DOUBLE[]
+        )
+      )[]\"
+    }
+  )
+")
+
+rural_places_df <- dbGetQuery(con, "SELECT features from rural_places")$features[[1]] |> as.data.frame()
+
+rural_places_df |> nrow()
+# [1] 2882
+
+rural_places_arrow <- rural_places_df |> to_duckdb() |> to_arrow()
+
+rural_places_arrow |> nrow()
+# [1] NA
+
+rural_places_arrow |> collect() |> nrow()
+# [1] 2882
+
+rural_places_arrow |>
+  write_dataset(path = "data/rural_places",
+                format = "parquet")
+
+rural_places_properties <- lapply(rural_places_df$properties |> as.list(), jsonlite::fromJSON)
+
+rural_places_geometry <- rural_places_ddb$geometry  # <= TODO: What type is this???
+                                                    # ... how to include in parquet?
+
+rural_places_props <- data.frame(matrix(ncol=length(rural_places_properties[[1]]),nrow=0, dimnames=list(NULL, names(rural_places_properties[[1]]))))
+
+for (r in c(1:length(rural_places_properties))) {
+  for (c in c(1:length(rural_places_properties[[r]]))) {
+      # Replace NULLs with "NA"
+      rural_places_properties[[r]][sapply(rural_places_properties[[r]], is.null)] <- NA
+      if (length(unlist(rural_places_properties[[r]])) > 61) {
+        rural_places_props[r,] <- unlist(rural_places_properties[[r]])
+      }
+    }
+}
+
+rural_places_arrow_by_state <- rural_places_props |>
+    to_duckdb() |> 
+    to_arrow() |>
+    group_by(STUSPS)
+
+rural_places_arrow_by_state |>
+    write_dataset(path = "data/rural_places",
+                format = "parquet")
+
+rural_places <- arrow::open_dataset("data/rural_places") # <= available at s3://cori-risi-apps/examples/who-wins-b2s/rural_places
+
+rural_places |>
+  mutate(prop_score = as.double(prop_score)) |>
+  summarize(
+    max_prop_score = max(as.double(prop_score), na.rm = TRUE)
+  ) |>
+    collect()
+
+rural_places |>
+  mutate(prop_score = as.double(prop_score)) |>
+  select(prop_score) |>
+    collect()
+
+dbDisconnect(con)
+
+```

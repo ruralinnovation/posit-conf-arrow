@@ -1,0 +1,19 @@
+{
+  "name": "posit::conf(2024)/arrow",
+  "version": "0.0.1",
+  "description": "This workshop will focus on using the arrow R package—a mature R interface to Apache Arrow—to process larger-than-memory files and multi-file data sets with arrow using familiar dplyr syntax.",
+  "license": "Creative Commons Attribution 4.0 International License",
+  "homepage": "https://posit-conf-2024.github.io/arrow/",
+  "devDependencies": {
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/posit-conf-2024/arrow.git"
+  },
+  "scripts": {
+    "build": "npm run render",
+    "clean": "rm -rf _site/*",
+    "preview": "quarto render --output-dir _preview && python -m http.server -d _preview 3000",
+    "render": "npm run clean && quarto render --output-dir _site"
+  }
+}
