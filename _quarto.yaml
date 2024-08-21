@@ -1,6 +1,7 @@
 project:
   type: website
   render:
+    - "!exercises.qmd"
     - "*.qmd"
   execute-dir: project
 
