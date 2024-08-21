@@ -466,6 +466,20 @@ rural_places_arrow_by_state |>
     write_dataset(path = "data/rural_places",
                 format = "parquet")
 
+rural_places <- arrow::open_dataset("data/rural_places") # <= available at s3://cori-risi-apps/examples/who-wins-b2s/rural_places
+
+rural_places |>
+  mutate(prop_score = as.double(prop_score)) |>
+  summarize(
+    max_prop_score = max(as.double(prop_score), na.rm = TRUE)
+  ) |>
+    collect()
+
+rural_places |>
+  mutate(prop_score = as.double(prop_score)) |>
+  select(prop_score) |>
+    collect()
+
 dbDisconnect(con)
 
 ```
